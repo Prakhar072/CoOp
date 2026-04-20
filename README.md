@@ -5,6 +5,24 @@ This repo contains the codebase of a series of research projects focused on adap
 * [Conditional Prompt Learning for Vision-Language Models](https://arxiv.org/abs/2203.05557), in CVPR, 2022.
 * [Learning to Prompt for Vision-Language Models](https://arxiv.org/abs/2109.01134), IJCV, 2022.
 
+# adding new datasets
+# choose your dataset root
+DATA_ROOT=/full/path/to/datasets
+mkdir -p "$DATA_ROOT/oxford_pets/images" "$DATA_ROOT/oxford_pets/annotations"
+
+# if you downloaded the official archives to ~/Downloads:
+tar -xzf ~/Downloads/images.tar.gz -C "$DATA_ROOT/oxford_pets/images"
+tar -xzf ~/Downloads/annotations.tar.gz -C "$DATA_ROOT/oxford_pets/annotations"
+
+# copy the split JSON (if you have it)
+cp ~/Downloads/split_zhou_OxfordPets.json "$DATA_ROOT/oxford_pets/split_zhou_OxfordPets.json"
+
+# quick checks
+ls -l "$DATA_ROOT/oxford_pets"
+ls -l "$DATA_ROOT/oxford_pets/images" | head
+ls -l "$DATA_ROOT/oxford_pets/annotations" | head
+
+
 ## Updates
 
 - **07.10.2022**: Just added to both [CoOp](https://arxiv.org/abs/2109.01134) and [CoCoOp](https://arxiv.org/abs/2203.05557) (in their appendices) the results on the newly proposed DOSCO (DOmain Shift in COntext) benchmark, which focuses on contextual domain shift and covers a diverse set of classification problems. (The paper about DOSCO is [here](https://arxiv.org/abs/2209.07521) and the code for running CoOp/CoCoOp on DOSCO is [here](https://github.com/KaiyangZhou/on-device-dg).)

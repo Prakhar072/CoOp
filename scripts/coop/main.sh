@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # custom config
-DATA=/path/to/datasets
+DATA=/home/prakh/projects/CoOp/datasets_root
 TRAINER=CoOp
 
 DATASET=$1
