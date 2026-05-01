@@ -10,6 +10,7 @@ CTP=$3  # class token position (end or middle)
 NCTX=$4  # number of context tokens
 SHOTS=$5  # number of shots (1, 2, 4, 8, 16)
 CSC=$6  # class-specific context (False or True)
+LOSS_FN=$7  # loss function (cross_entropy, custom, etc.)
 
 for SEED in 1 2 3
 do
@@ -24,6 +25,7 @@ do
         --dataset-config-file configs/datasets/${DATASET}.yaml \
         --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
         --output-dir ${DIR} \
+        --loss-function ${LOSS_FN} \
         TRAINER.COOP.N_CTX ${NCTX} \
         TRAINER.COOP.CSC ${CSC} \
         TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \

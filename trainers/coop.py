@@ -12,6 +12,7 @@ from dassl.optim import build_optimizer, build_lr_scheduler
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
+from loss_functions import get_loss_function
 
 _tokenizer = _Tokenizer()
 
@@ -259,18 +260,21 @@ class CoOp(TrainerX):
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         
+        # Get the loss function based on configuration
+        loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION)
+        
         prec = self.cfg.TRAINER.COOP.PREC
         if prec == "amp":
             with autocast():
                 output = self.model(image)
-                loss = F.cross_entropy(output, label)
+                loss = loss_fn(output, label)
             self.optim.zero_grad()
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
             output = self.model(image)
-            loss = F.cross_entropy(output, label)
+            loss = loss_fn(output, label)
             self.model_backward_and_update(loss)
 
         loss_summary = {
