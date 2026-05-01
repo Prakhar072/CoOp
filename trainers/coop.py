@@ -261,7 +261,7 @@ class CoOp(TrainerX):
         image, label = self.parse_batch_train(batch)
         
         # Get the loss function based on configuration
-        loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION)
+        loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION, self.cfg)
         
         prec = self.cfg.TRAINER.COOP.PREC
         if prec == "amp":
