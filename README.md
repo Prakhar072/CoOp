@@ -1,3 +1,7 @@
+# Overleaf Final Project report
+Our project report can be found at this link - https://www.overleaf.com/project/69f8c7a6535aa7af0a639017
+The report has been generated in the neurips format using the package {neurips_2024}.
+
 # Prompt Learning for Vision-Language Models
 
 This repo contains the codebase of a series of research projects focused on adapting vision-language models like [CLIP](https://arxiv.org/abs/2103.00020) to downstream datasets via *prompt learning*:
