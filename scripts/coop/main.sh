@@ -29,6 +29,7 @@ do
         TRAINER.COOP.N_CTX ${NCTX} \
         TRAINER.COOP.CSC ${CSC} \
         TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \
-        DATASET.NUM_SHOTS ${SHOTS}
+        DATASET.NUM_SHOTS ${SHOTS} \
+        OPTIM.MAX_EPOCH 100
     fi
 done

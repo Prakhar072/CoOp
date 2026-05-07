@@ -8,6 +8,10 @@ Add custom loss implementations here.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os
+import os.path as osp
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 
 def get_loss_function(loss_fn_name):
@@ -28,7 +32,7 @@ def get_loss_function(loss_fn_name):
         raise ValueError(f"Unknown loss function: {loss_fn_name}")
 
 
-def cross_entropy_loss(output, label):
+def cross_entropy_loss(output, label, n_cls):
     return F.cross_entropy(output, label)
 
 def gaussian_similarity(emb, sigma):
@@ -48,9 +52,8 @@ def normalize_adj(adj: torch.Tensor):
     return D_inv_sqrt @ adj @ D_inv_sqrt
 
 def plot_graph(adj):
-    output_dir = "graphs_dir"
-    graph_dir = osp.join(output_dir, "graphs")
-    os.makedirs(graph_dir, exist_ok=True)
+    base_dir = "output/graphs"
+    os.makedirs(base_dir, exist_ok=True)
 
     plt.figure(figsize=(6, 6))
     plt.imshow(adj.detach().cpu().numpy(), cmap="coolwarm", vmin=0.0, vmax=1.0)
@@ -59,8 +62,29 @@ def plot_graph(adj):
     plt.xlabel("Node")
     plt.ylabel("Node")
     plt.tight_layout()
-    plt.savefig(osp.join(graph_dir, "adj_mat.png"), dpi=300)
+    plt.savefig(osp.join(base_dir, "adj_mat.png"), dpi=300)
     plt.close()
+
+# def plot_graph(adj):
+#     """Save adjacency matrix visualization to output/graphs/ with timestamp."""
+#     base_dir = "output/graphs"
+#     os.makedirs(base_dir, exist_ok=True)
+    
+#     # Use timestamp to avoid overwriting
+#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+#     filename = f"adj_mat_{timestamp}.png"
+#     filepath = osp.join(base_dir, filename)
+    
+#     plt.figure(figsize=(6, 6))
+#     plt.imshow(adj.detach().cpu().numpy(), cmap="coolwarm", vmin=0.0, vmax=1.0)
+#     plt.colorbar(fraction=0.046, pad=0.04)
+#     plt.title("Adjacency matrix")
+#     plt.xlabel("Node")
+#     plt.ylabel("Node")
+#     plt.tight_layout()
+#     plt.savefig(filepath, dpi=300)
+#     plt.close()
+#     print(f"Adjacency matrix saved to {filepath}")
 
 def gloss_lpa(train_emb, test_emb, Ytrain, sigma, num_labels):
     device = train_emb.device
@@ -84,11 +108,11 @@ def gloss_lpa(train_emb, test_emb, Ytrain, sigma, num_labels):
     #     raise ValueError("NaN or inf in embeddings")
 
     adj = gaussian_similarity(emb, sigma).to(torch.float32) 
-    #plot_graph(adj)
+    plot_graph(adj)
     adj = adj + adj.t()
-    adj_norm = normalize_adj(adj)
-    #todo:might not work error .to_dense()
-    print(f"Adjacency matrix stats: min={adj_norm.min().item():.4f}, max={adj_norm.max().item():.4f}, mean={adj_norm.mean().item():.4f}, std={adj_norm.std().item():.4f}")
+    adj_norm = normalize_adj(adj).to_dense()
+    #todo:might not work error 
+    #print(f"Adjacency matrix stats: min={adj_norm.min().item():.4f}, max={adj_norm.max().item():.4f}, mean={adj_norm.mean().item():.4f}, std={adj_norm.std().item():.4f}")
 
     # Tran = adj_norm / adj_norm.sum(dim=0, keepdim=True)
     # row_sum = Tran.sum(dim=1, keepdim=True)
@@ -108,9 +132,9 @@ def gloss_lpa(train_emb, test_emb, Ytrain, sigma, num_labels):
 
     return F_UU
 
-def gloss(output, labels):
-    sigma = 0.2
-    gamma = 0.5
+def gloss(output, labels, n_cls):
+    sigma = 2
+    gamma = 0.9
     # gloss_temp = nn.Parameter(torch.tensor(1.0))
     # print("Computing GLoss ...")
     # print(f"GLoss parameters: sigma={sigma}, gamma={gamma}")
@@ -126,7 +150,7 @@ def gloss(output, labels):
         emb_eval_set,
         labels_lab_set,
         sigma,
-        output.size(1))
+        n_cls)
         #self.model.prompt_learner.n_cls
         ## get_loss_function(...)
         #def get_loss_function(name, n_cls=None):
