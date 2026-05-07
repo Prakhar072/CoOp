@@ -221,18 +221,29 @@ class CustomCLIP(nn.Module):
     
     def forward_with_label_graph(self, image, labels):
         image_features = self.encode_image(image)
-        text_features = self.encode_text_features()
-        label_features = text_features[labels]
-
+        
+        # Get the learned context vectors directly from PromptLearner
+        # These are the actual learnable parameters (shape: n_ctx, dim) or (n_cls, n_ctx, dim)
+        ctx = self.prompt_learner.ctx
+        
+        # If ctx is shared across classes (2D), expand to match labels
+        if ctx.dim() == 2:
+            # ctx shape: (n_ctx, dim)
+            # Average across context dimension to get a single feature vector
+            prompt_features = ctx.mean(dim=0, keepdim=True).expand(labels.shape[0], -1)
+        else:
+            # ctx shape: (n_cls, n_ctx, dim) - class-specific contexts
+            # Select contexts based on labels and average across context dimension
+            batch_ctx = ctx[labels]  # (batch_size, n_ctx, dim)
+            prompt_features = batch_ctx.mean(dim=1)  # (batch_size, dim)
+        
+        # Normalize
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        label_features = label_features / label_features.norm(dim=-1, keepdim=True)
-
-        # concat_features = torch.cat([image_features, label_features], dim=-1)
-        # # concat_features = image_features * label_features  # element-wise product
-        # concat_features = concat_features / concat_features.norm(dim=-1, keepdim=True)
-
+        prompt_features = prompt_features / prompt_features.norm(dim=-1, keepdim=True)
+        
+        # Concatenate image embeddings with learned context embeddings
         alpha = 1.0  # tunable — amplifies prompt's influence on graph
-        concat_features = torch.cat([image_features, alpha * label_features], dim=-1)
+        concat_features = torch.cat([image_features, alpha * prompt_features], dim=-1)
         concat_features = concat_features / concat_features.norm(dim=-1, keepdim=True)
         
         return concat_features
@@ -307,13 +318,24 @@ class CoOp(TrainerX):
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optim)
             self.scaler.update()
+        
         else:
-            output = self.model(image)
-            ce_loss = F.cross_entropy(output, label)
-            concat_emb = self.model.forward_with_label_graph(image, label)
-            n_cls = self.model.prompt_learner.n_cls
-            g_loss = loss_fn(concat_emb, label, n_cls)
-            loss = 0.3 * ce_loss + 0.7 * g_loss
+            loss_fn_name = self.cfg.TRAINER.LOSS_FUNCTION
+            
+            if loss_fn_name == "cross_entropy":
+                # Pure CE baseline
+                output = self.model(image)
+                loss = F.cross_entropy(output, label)
+            else:  # Assume it's "custom" or "ce_gloss"
+                # CE+GLoss hybrid
+                print("shouldnt print this---------------------------------------------------")
+                output = self.model(image)
+                ce_loss = F.cross_entropy(output, label)
+                concat_emb = self.model.forward_with_label_graph(image, label)
+                n_cls = self.model.prompt_learner.n_cls
+                g_loss = loss_fn(concat_emb, label, n_cls)
+                loss = 0.1 * ce_loss + 0.8 * g_loss
+            
             self.model_backward_and_update(loss)
 
         loss_summary = {
