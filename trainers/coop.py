@@ -249,6 +249,17 @@ class CustomCLIP(nn.Module):
         return concat_features
 
 
+# Dataset-specific hyperparameters for GLoss
+DATASET_HYPERPARAMS = {
+    "caltech101": {"sigma": 2.0, "gamma": 0.9},
+    "dtd": {"sigma": 1.5, "gamma": 0.85},
+    "fgvc_aircraft": {"sigma": 2.5, "gamma": 0.9},
+    "oxford_flowers": {"sigma": 2.0, "gamma": 0.9},
+    "oxford_pets": {"sigma": 1.5, "gamma": 0.85},
+    "ucf101": {"sigma": 3.0, "gamma": 0.9},
+}
+
+
 @TRAINER_REGISTRY.register()
 class CoOp(TrainerX):
     """Context Optimization (CoOp).
@@ -333,8 +344,15 @@ class CoOp(TrainerX):
                 ce_loss = F.cross_entropy(output, label)
                 concat_emb = self.model.forward_with_label_graph(image, label)
                 n_cls = self.model.prompt_learner.n_cls
-                g_loss = loss_fn(concat_emb, label, n_cls)
-                loss = 0.1 * ce_loss + 0.8 * g_loss
+                
+                # Get dataset-specific hyperparameters
+                dataset_name = self.cfg.DATASET.NAME.lower()
+                hyperparams = DATASET_HYPERPARAMS.get(dataset_name, {"sigma": 2.0, "gamma": 0.9})
+                sigma = hyperparams["sigma"]
+                gamma = hyperparams["gamma"]
+                
+                g_loss = loss_fn(concat_emb, label, n_cls, sigma=sigma, gamma=gamma)
+                loss = 0.2 * ce_loss + 0.8 * g_loss
             
             self.model_backward_and_update(loss)
 

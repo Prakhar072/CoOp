@@ -132,9 +132,7 @@ def gloss_lpa(train_emb, test_emb, Ytrain, sigma, num_labels):
 
     return F_UU
 
-def gloss(output, labels, n_cls):
-    sigma = 2
-    gamma = 0.9
+def gloss(output, labels, n_cls, sigma=2.0, gamma=0.9):
     # gloss_temp = nn.Parameter(torch.tensor(1.0))
     # print("Computing GLoss ...")
     # print(f"GLoss parameters: sigma={sigma}, gamma={gamma}")

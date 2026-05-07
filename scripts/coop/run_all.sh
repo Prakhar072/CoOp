@@ -6,12 +6,12 @@ NCTX=16
 SHOTS1=16
 SHOTS2=4
 CSC1=False
-CSC2=True
-lOSS=custom
+#CSC2=True
+LOSS=custom
 
 # List of datasets (adjust based on what you've downloaded)
 DATASETS=(
-    caltech-101
+    caltech101
     dtd
     #eurosat
     fgvc_aircraft
@@ -30,9 +30,9 @@ do
     echo "======================================"
 
     bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS1 $CSC1 $LOSS
-    bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS1 $CSC2 $LOSS
+   # bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS1 $CSC2 $LOSS
     bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC1 $LOSS
-    bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC2 $LOSS
+    #bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC2 $LOSS
 
     echo "Finished dataset: $DATASET"
 done
