@@ -339,7 +339,6 @@ class CoOp(TrainerX):
                 loss = F.cross_entropy(output, label)
             else:  # Assume it's "custom" or "ce_gloss"
                 # CE+GLoss hybrid
-                print("shouldnt print this---------------------------------------------------")
                 output = self.model(image)
                 ce_loss = F.cross_entropy(output, label)
                 concat_emb = self.model.forward_with_label_graph(image, label)
