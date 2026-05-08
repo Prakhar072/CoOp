@@ -11,10 +11,10 @@ LOSS=custom
 
 # List of datasets (adjust based on what you've downloaded)
 DATASETS=(
-    caltech101
-    dtd
+    #caltech101
+    #dtd
     #eurosat
-    fgvc_aircraft
+    #fgvc_aircraft
     #food101
     oxford_flowers
     oxford_pets
