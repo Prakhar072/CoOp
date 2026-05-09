@@ -14,10 +14,10 @@ DATASETS=(
     #caltech101
     #dtd
     #eurosat
-    #fgvc_aircraft
+    fgvc_aircraft
     #food101
-    oxford_flowers
-    oxford_pets
+    #oxford_flowers
+    #oxford_pets
     #stanford_cars
     #sun397
     ucf101
@@ -31,7 +31,7 @@ do
 
     bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS1 $CSC1 $LOSS
    # bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS1 $CSC2 $LOSS
-    bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC1 $LOSS
+    #bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC1 $LOSS
     #bash scripts/coop/main.sh $DATASET $CFG $CTP $NCTX $SHOTS2 $CSC2 $LOSS
 
     echo "Finished dataset: $DATASET"
