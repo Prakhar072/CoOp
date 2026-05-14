@@ -9,10 +9,13 @@ __pycache__/
 #checkpoints, dataset, etc
 datasets_root/
 output_0.2hybrid/
+output_01.hybrid/
+output_0.3hybrid/
 output_ce/
 models.txt
 tokens.csv
 prompt_analysis_out/
+output_8th/
 
 # Distribution / packaging
 .Python

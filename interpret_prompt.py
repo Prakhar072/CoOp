@@ -1,12 +1,9 @@
 import os
 import argparse
-from glob import glob
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 import numpy as np
-import re
 
 try:
     import matplotlib.pyplot as plt
@@ -17,356 +14,304 @@ from clip.simple_tokenizer import SimpleTokenizer
 from clip import clip
 
 
+# ============================================================
+# EXPLICIT PATH PAIRS
+# Edit this dict to match your actual checkpoint paths.
+# Key = dataset label used in output filenames
+# Each entry has:
+#   "ce":    path to CE baseline checkpoint
+#   "gloss": path to CE+GLoss hybrid checkpoint
+#   "shots": label for output ("16shot" or "4shot")
+# ============================================================
+
+DATASET_PAIRS = {
+    "caltech101": {
+        "ce":    "output_ce/caltech101/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-50",
+        "gloss": "output_0.2hybrid/caltech101/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "16shot",
+    },
+    "dtd": {
+        "ce":    "output_ce/dtd/CoOp/rn50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "gloss": "output_0.2hybrid/dtd/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "16shot",
+    },
+    "oxford_flowers": {
+        "ce":    "output_ce/oxford_flowers/CoOp/rn50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "gloss": "output_0.2hybrid/oxford_flowers/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "16shot",
+    },
+    "oxford_pets": {
+        "ce":    "output_ce/oxford_pets/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-50",
+        "gloss": "output_0.2hybrid/oxford_pets/CoOp/rn50_ep50_16shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "16shot",
+    },
+    "fgvc_aircraft": {
+        "ce":    "output_ce/fgvc_aircraft/CoOp/rn50_4shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "gloss": "output_0.2hybrid/fgvc_aircraft/CoOp/rn50_ep50_4shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "4shot",
+    },
+    "ucf101": {
+        "ce":    "output_ce/ucf101/CoOp/rn50_4shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "gloss": "output_0.2hybrid/ucf101/CoOp/rn50_ep50_4shots/nctx16_cscFalse_ctpend/seed1/prompt_learner/model.pth.tar-200",
+        "shots": "4shot",
+    },
+}
+
+
 def load_clip_to_cpu(backbone_name="RN50"):
     url = clip._MODELS[backbone_name]
     model_path = clip._download(url)
-
     try:
         model = torch.jit.load(model_path, map_location="cpu").eval()
         state_dict = None
     except RuntimeError:
         state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
-
     model = clip.build_model(state_dict or model.state_dict())
     return model
 
 
-def find_prompt_files(base_dir):
-    base_dir = os.path.abspath(base_dir)
-    # find all prompt_learner directories and choose the best checkpoint file inside
-    prompt_dirs = glob(os.path.join(base_dir, '**', 'prompt_learner'), recursive=True)
-    files = {}
-    for pd in prompt_dirs:
-        run_dir_abs = os.path.dirname(pd)
-        rel = os.path.relpath(run_dir_abs, base_dir)
-        # collect candidate files
-        candidates = [p for p in glob(os.path.join(pd, '*')) if os.path.isfile(p)]
-        if not candidates:
-            continue
-
-        # prefer files that look like model checkpoints in this order
-        def pick_by_substrings(cands, substrs):
-            matches = [p for p in cands if any(s in os.path.basename(p) for s in substrs)]
-            if matches:
-                # prefer most recently modified
-                matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                return matches[0]
-            return None
-
-        selected = None
-        # look for .pth.tar-like files
-        selected = pick_by_substrings(candidates, ['.pth.tar', '.pth.tar-'])
-        if selected is None:
-            selected = pick_by_substrings(candidates, ['.tar', 'model.tar'])
-        if selected is None:
-            selected = pick_by_substrings(candidates, ['.pth'])
-        if selected is None:
-            selected = pick_by_substrings(candidates, ['.pt'])
-
-        # if there's a 'checkpoint' pointer file, try to read it and resolve
-        if selected is None:
-            for c in candidates:
-                if os.path.basename(c) == 'checkpoint':
-                    try:
-                        with open(c, 'r') as fh:
-                            text = fh.read().strip()
-                        # try to extract a plausible target from the file
-                        lines = [ln.strip().strip('"').strip('\'') for ln in text.splitlines() if ln.strip()]
-                        target = None
-                        for ln in reversed(lines):
-                            if 'model' in ln or '.pth' in ln or '.tar' in ln:
-                                target = ln
-                                break
-                        if target:
-                            if not os.path.isabs(target):
-                                candidate = os.path.join(pd, target)
-                            else:
-                                candidate = target
-                            if os.path.exists(candidate):
-                                selected = candidate
-                                break
-                    except Exception:
-                        pass
-
-        # fallback: pick the largest file (likely a binary checkpoint)
-        if selected is None and candidates:
-            try:
-                selected = max(candidates, key=lambda p: os.path.getsize(p))
-            except Exception:
-                selected = candidates[0]
-
-        if selected:
-            files[rel] = selected
-    return files
-
-
-def extract_ctx_from_checkpoint(path):
-    loaded = torch.load(path, map_location='cpu', weights_only=False)
-    sd = None
-    if isinstance(loaded, dict):
-        sd = loaded.get('state_dict', loaded)
-    else:
+def extract_ctx(path):
+    loaded = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(loaded, dict):
         raise RuntimeError(f"Unexpected checkpoint format: {path}")
-
-    # direct key
-    if 'ctx' in sd:
-        return sd['ctx'].float()
-
-    # search for keys that contain ctx
+    sd = loaded.get("state_dict", loaded)
+    if "ctx" in sd:
+        return sd["ctx"].float()
     for k, v in sd.items():
-        if k.endswith('.ctx') or k == 'prompt_learner.ctx' or k.endswith('ctx'):
+        if k.endswith(".ctx") or k == "prompt_learner.ctx":
             return v.float()
-
-    raise KeyError("Could not find 'ctx' in checkpoint state dict keys")
+    raise KeyError(f"Could not find 'ctx' in checkpoint: {path}\nAvailable keys: {list(sd.keys())}")
 
 
 def visualize_token_nearest_words(ctx, token_embedding, tokenizer, topk=10):
-    # ctx: [L, D] or [C, L, D]
-    if ctx.dim() == 2:
-        distance = torch.cdist(ctx, token_embedding)
-        sorted_idxs = torch.argsort(distance, dim=1)[:, :topk]
-        results = []
-        for m, idxs in enumerate(sorted_idxs):
-            words = [tokenizer.decoder[idx.item()] for idx in idxs]
-            dist = [f"{distance[m, idx].item():.4f}" for idx in idxs]
-            results.append((m, words, dist))
-        return results
-    elif ctx.dim() == 3:
-        C = ctx.shape[0]
-        all_results = []
-        for c in range(C):
-            res = visualize_token_nearest_words(ctx[c], token_embedding, tokenizer, topk=topk)
-            all_results.append(res)
-        return all_results
-    else:
-        raise ValueError("Unsupported ctx dim")
-
-
-def compute_similarity_and_visualize(ctx1, ctx2, out_prefix, plt_enabled=True):
-    if out_prefix and os.path.dirname(out_prefix):
-        os.makedirs(os.path.dirname(out_prefix), exist_ok=True)
-    results = {}
-    if ctx1.dim() == 2 and ctx2.dim() == 2:
-        avg1 = ctx1.mean(dim=0)
-        avg2 = ctx2.mean(dim=0)
-        cos_global = F.cosine_similarity(avg1.unsqueeze(0), avg2.unsqueeze(0)).item()
-        results['global_cos'] = cos_global
-        if ctx1.shape[0] == ctx2.shape[0]:
-            per_token = F.cosine_similarity(ctx1, ctx2, dim=1).cpu().numpy()
-            results['per_token_cos'] = per_token
-        m1 = F.normalize(ctx1, dim=1) @ F.normalize(ctx2, dim=1).t()
-        mat = m1.cpu().numpy()
-        results['matrix'] = mat
-        if plt_enabled and plt:
-            try:
-                plt.figure(figsize=(6,5))
-                plt.imshow(mat, aspect='auto', cmap='viridis')
-                plt.colorbar(label='cosine')
-                plt.xlabel('method2 tokens')
-                plt.ylabel('method1 tokens')
-                plt.title(f'Cosine similarity matrix ({mat.shape[0]}x{mat.shape[1]})\nGlobal cos={cos_global:.4f}')
-                plt.tight_layout()
-                out_path = out_prefix + '_sim.png'
-                plt.savefig(out_path)
-                print(f"    Saved similarity matrix PNG to {out_path}")
-                plt.close()
-            except Exception as e:
-                print(f"    Warning: Failed to save PNG at {out_prefix}_sim.png: {e}")
-    elif ctx1.dim() == 3 and ctx2.dim() == 3 and ctx1.shape[0] == ctx2.shape[0]:
-        C = ctx1.shape[0]
-        results['per_class'] = []
-        for c in range(C):
-            resc = compute_similarity_and_visualize(ctx1[c], ctx2[c], f"{out_prefix}_class{c}", plt_enabled=plt_enabled)
-            results['per_class'].append(resc)
-        return results
-    else:
-        f1 = ctx1.view(-1)
-        f2 = ctx2.view(-1)
-        cos = F.cosine_similarity(f1.unsqueeze(0), f2.unsqueeze(0)).item()
-        results['global_cos_flatten'] = cos
+    """Find closest vocabulary tokens for each context position."""
+    distance = torch.cdist(ctx, token_embedding)
+    sorted_idxs = torch.argsort(distance, dim=1)[:, :topk]
+    results = []
+    for m, idxs in enumerate(sorted_idxs):
+        words = [tokenizer.decoder[idx.item()] for idx in idxs]
+        dists = [f"{distance[m, idx].item():.4f}" for idx in idxs]
+        results.append((m, words, dists))
     return results
+
+
+def plot_similarity_matrix(ctx_ce, ctx_gloss, dataset, shots, out_dir):
+    """
+    Plot cosine similarity matrix between CE and GLoss prompt tokens.
+    Rows = CE tokens, Cols = GLoss tokens.
+    """
+    mat = (F.normalize(ctx_ce, dim=1) @ F.normalize(ctx_gloss, dim=1).t()).cpu().numpy()
+    global_cos = F.cosine_similarity(
+        ctx_ce.mean(dim=0, keepdim=True),
+        ctx_gloss.mean(dim=0, keepdim=True)
+    ).item()
+    per_token_cos = F.cosine_similarity(ctx_ce, ctx_gloss, dim=1).cpu().numpy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: similarity matrix
+    im = axes[0].imshow(mat, aspect='auto', cmap='viridis', vmin=0, vmax=1)
+    plt.colorbar(im, ax=axes[0], label='Cosine Similarity')
+    axes[0].set_xlabel('CE+GLoss tokens')
+    axes[0].set_ylabel('CE tokens')
+    axes[0].set_title(f'{dataset} ({shots})\nToken Similarity Matrix\nGlobal cos={global_cos:.4f}')
+    axes[0].set_xticks(range(ctx_gloss.shape[0]))
+    axes[0].set_yticks(range(ctx_ce.shape[0]))
+
+    # Right: per-token cosine similarity
+    axes[1].bar(range(len(per_token_cos)), per_token_cos, color='steelblue', alpha=0.8)
+    axes[1].axhline(y=global_cos, color='red', linestyle='--', label=f'Global mean={global_cos:.4f}')
+    axes[1].set_xlabel('Context Token Position')
+    axes[1].set_ylabel('Cosine Similarity')
+    axes[1].set_title(f'{dataset} ({shots})\nPer-token Similarity: CE vs CE+GLoss')
+    axes[1].set_ylim([0, 1.05])
+    axes[1].legend()
+    axes[1].set_xticks(range(len(per_token_cos)))
+
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f"{dataset}_{shots}_similarity.png")
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+    return global_cos, per_token_cos, mat
+
+
+def plot_prompt_heatmaps(ctx_ce, ctx_gloss, dataset, shots, out_dir):
+    """
+    Side-by-side heatmaps of the raw prompt vectors.
+    """
+    vmin = min(ctx_ce.min().item(), ctx_gloss.min().item())
+    vmax = max(ctx_ce.max().item(), ctx_gloss.max().item())
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    im1 = axes[0].imshow(ctx_ce.cpu().numpy(), aspect='auto', cmap='RdBu_r', vmin=vmin, vmax=vmax)
+    plt.colorbar(im1, ax=axes[0])
+    axes[0].set_title(f'CE Baseline\n{dataset} ({shots})')
+    axes[0].set_xlabel('Embedding Dimension (512)')
+    axes[0].set_ylabel('Context Token Position')
+
+    im2 = axes[1].imshow(ctx_gloss.cpu().numpy(), aspect='auto', cmap='RdBu_r', vmin=vmin, vmax=vmax)
+    plt.colorbar(im2, ax=axes[1])
+    axes[1].set_title(f'CE+GLoss Hybrid\n{dataset} ({shots})')
+    axes[1].set_xlabel('Embedding Dimension (512)')
+    axes[1].set_ylabel('Context Token Position')
+
+    plt.suptitle(f'Learned Prompt Vectors: CE vs CE+GLoss\n{dataset} ({shots})', fontsize=13)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f"{dataset}_{shots}_heatmap.png")
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
+def plot_norm_comparison(ctx_ce, ctx_gloss, dataset, shots, out_dir):
+    """
+    Compare L2 norms of prompt tokens between CE and CE+GLoss.
+    """
+    norm_ce = ctx_ce.norm(dim=1).cpu().numpy()
+    norm_gloss = ctx_gloss.norm(dim=1).cpu().numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    x = range(len(norm_ce))
+    ax.plot(x, norm_ce, marker='o', label='CE Baseline', linewidth=2)
+    ax.plot(x, norm_gloss, marker='s', label='CE+GLoss', linewidth=2)
+    ax.set_xlabel('Context Token Position')
+    ax.set_ylabel('L2 Norm')
+    ax.set_title(f'Prompt Token Magnitudes: CE vs CE+GLoss\n{dataset} ({shots})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f"{dataset}_{shots}_norms.png")
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
+def plot_summary_global_cos(summary, out_dir):
+    """
+    Bar chart of global cosine similarity across all datasets.
+    Lower = more different prompts between CE and CE+GLoss.
+    """
+    datasets = list(summary.keys())
+    cos_vals = [summary[d]['global_cos'] for d in datasets]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(datasets, cos_vals, color='steelblue', alpha=0.8, edgecolor='black')
+    ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='Perfect similarity')
+    ax.set_xlabel('Dataset')
+    ax.set_ylabel('Global Cosine Similarity')
+    ax.set_title('Prompt Similarity: CE Baseline vs CE+GLoss\n(Lower = More Different Prompts Learned)')
+    ax.set_ylim([0, 1.05])
+    ax.legend()
+
+    # Add value labels on bars
+    for bar, val in zip(bars, cos_vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                f'{val:.3f}', ha='center', va='bottom', fontsize=10)
+
+    plt.xticks(rotation=15, ha='right')
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "summary_global_cos.png")
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"\nSaved summary chart: {out_path}")
+
+
+def print_nearest_words(ctx_ce, ctx_gloss, dataset, shots, tokenizer, token_embedding, topk):
+    """Print nearest vocabulary words for both CE and CE+GLoss prompts."""
+    print(f"\n  [{dataset} {shots}] Nearest words in CE baseline:")
+    results_ce = visualize_token_nearest_words(ctx_ce, token_embedding, tokenizer, topk=topk)
+    for pos, words, dists in results_ce:
+        print(f"    Token {pos+1:2d}: {words[:5]}")
+
+    print(f"\n  [{dataset} {shots}] Nearest words in CE+GLoss hybrid:")
+    results_gloss = visualize_token_nearest_words(ctx_gloss, token_embedding, tokenizer, topk=topk)
+    for pos, words, dists in results_gloss:
+        print(f"    Token {pos+1:2d}: {words[:5]}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", help="Path to a single learned prompt (keeps original behavior)")
-    parser.add_argument("--dir1", help="First output folder (e.g., output_ce)")
-    parser.add_argument("--dir2", help="Second output folder (e.g., output_0.2hybrid)")
-    parser.add_argument("--topk", type=int, default=10, help="Top-k similar words to show")
     parser.add_argument("--out", default="prompt_analysis_out", help="Directory to save visualizations")
-    parser.add_argument("--backbone", default="RN50", help="CLIP backbone name for token embedding")
+    parser.add_argument("--topk", type=int, default=5, help="Top-k nearest words to print")
+    parser.add_argument("--backbone", default="RN50", help="CLIP backbone name")
+    parser.add_argument("--no-words", action="store_true", help="Skip nearest word analysis")
     args = parser.parse_args()
 
+    os.makedirs(args.out, exist_ok=True)
+
+    print("Loading CLIP tokenizer and token embeddings...")
     tokenizer = SimpleTokenizer()
     clip_model = load_clip_to_cpu(args.backbone)
-    token_embedding = clip_model.token_embedding.weight
-    print(f"Size of token embedding: {token_embedding.shape}")
+    token_embedding = clip_model.token_embedding.weight.detach()
+    print(f"Token embedding size: {token_embedding.shape}")
 
-    if args.file and not (args.dir1 or args.dir2):
-        fpath = args.file
-        assert os.path.exists(fpath)
-        print(f"Return the top-{args.topk} matched words for {fpath}")
-        prompt_learner = torch.load(fpath, map_location="cpu")["state_dict"]
-        ctx = prompt_learner["ctx"].float()
-        print(f"Size of context: {ctx.shape}")
-        if ctx.dim() == 2:
-            results = visualize_token_nearest_words(ctx, token_embedding, tokenizer, topk=args.topk)
-            for m, words, dist in results:
-                print(f"{m+1}: {words} {dist}")
-        elif ctx.dim() == 3:
-            raise NotImplementedError
-        return
+    summary = {}
 
-    if not (args.dir1 and args.dir2):
-        parser.error("Either provide --file or both --dir1 and --dir2 for comparison mode")
+    for dataset, paths in DATASET_PAIRS.items():
+        shots = paths["shots"]
+        path_ce = paths["ce"]
+        path_gloss = paths["gloss"]
 
-    dir1 = args.dir1
-    dir2 = args.dir2
-    files1 = find_prompt_files(dir1)
-    files2 = find_prompt_files(dir2)
-    common_keys = set(files1.keys()) & set(files2.keys())
-    print(f"Found {len(files1)} prompt runs in dir1, {len(files2)} in dir2, {len(common_keys)} matched run-seeds to compare")
+        print(f"\n{'='*60}")
+        print(f"Dataset: {dataset} ({shots})")
+        print(f"  CE path:    {path_ce}")
+        print(f"  GLoss path: {path_gloss}")
 
-    # group by experiment (strip the trailing seed folder)
-    group_map = {}
-    for rel in common_keys:
-        group = os.path.dirname(rel)
-        group_map.setdefault(group, []).append(rel)
-
-    print(f"Found {len(group_map)} unique experiments (groups) across seeds")
-
-    os.makedirs(args.out, exist_ok=True)
-    summary_rows = []
-    commented_lines = []
-
-    def has_shot_tag(s, n):
-        # Check for patterns like rn50_16shots, rn50_4shots, 16shot, 4shot, etc.
-        return bool(re.search(rf"{n}[-_]?shots?\b", s, flags=re.IGNORECASE))
-
-    groups = sorted(group_map.keys())
-    # Build list of groups to process according to shot rules
-    groups_to_process = []
-    for group in groups:
-        dataset = group.split(os.sep)[0].lower()
-        if dataset in ('fgvc_aircraft', 'ucf101'):
-            # for these datasets only run 4-shot; comment out any 16-shot lines
-            if has_shot_tag(group, 16):
-                commented_lines.append(f"# {group},excluded: only 4-shot available")
-                continue
-            if has_shot_tag(group, 4):
-                groups_to_process.append(group)
-            else:
-                commented_lines.append(f"# {group},skipped: no 4-shot variant found")
-        else:
-            # for all other datasets, only run 16-shot
-            if has_shot_tag(group, 16):
-                groups_to_process.append(group)
-            else:
-                commented_lines.append(f"# {group},skipped: not a 16-shot variant")
-
-    print(f"Will process {len(groups_to_process)} groups after shot filtering")
-
-    print("\nGroups found before filtering:")
-    for g in groups:
-        print(f"  {g}")
-    print("\nGroups after filtering:")
-    for g in groups_to_process:
-        print(f"  {g}")
-
-    for group in groups_to_process:
-        seeds = sorted(group_map[group])
-        if len(seeds) != 3:
-            print(f"Skipping {group}: expected 3 seeds, found {len(seeds)}")
-            commented_lines.append(f"# {group},skipped: found {len(seeds)} seeds")
+        # Check paths exist
+        if not os.path.exists(path_ce):
+            print(f"  ⚠ SKIPPING: CE checkpoint not found: {path_ce}")
+            continue
+        if not os.path.exists(path_gloss):
+            print(f"  ⚠ SKIPPING: GLoss checkpoint not found: {path_gloss}")
             continue
 
-        seed_vals = []
-        seed_matrices = []
-        for rel in seeds:
-            p1 = files1[rel]
-            p2 = files2[rel]
-            print(f"\nComparing run: {rel}")
-            print(f"  method1: {p1}")
-            print(f"  method2: {p2}")
-            try:
-                ctx1 = extract_ctx_from_checkpoint(p1)
-                ctx2 = extract_ctx_from_checkpoint(p2)
-            except Exception as e:
-                print(f"  Failed to load ctx: {e}")
-                seed_vals.append(None)
-                continue
-            print(f"  ctx shapes: {ctx1.shape} vs {ctx2.shape}")
-            # save per-seed PNGs and aggregate later
-            out_prefix = os.path.join(args.out, f"{group.replace(os.sep, '_')}_{os.path.basename(rel)}")
-            res = compute_similarity_and_visualize(ctx1, ctx2, out_prefix, plt_enabled=True)
+        # Load ctx vectors
+        try:
+            ctx_ce = extract_ctx(path_ce)
+            ctx_gloss = extract_ctx(path_gloss)
+        except Exception as e:
+            print(f"  ⚠ SKIPPING: Failed to load ctx: {e}")
+            continue
 
-            val = None
-            if 'global_cos' in res:
-                val = res['global_cos']
-            elif 'global_cos_flatten' in res:
-                val = res['global_cos_flatten']
-            elif 'per_class' in res:
-                # average per-class values if present
-                vals = []
-                for rc in res['per_class']:
-                    if isinstance(rc, dict):
-                        if 'global_cos' in rc:
-                            vals.append(rc['global_cos'])
-                        elif 'global_cos_flatten' in rc:
-                            vals.append(rc['global_cos_flatten'])
-                if vals:
-                    val = float(np.mean(vals))
+        print(f"  ctx shape CE: {ctx_ce.shape}, GLoss: {ctx_gloss.shape}")
 
-            if val is not None:
-                seed_vals.append(float(val))
+        # Generate all plots
+        global_cos, per_token_cos, mat = plot_similarity_matrix(ctx_ce, ctx_gloss, dataset, shots, args.out)
+        plot_prompt_heatmaps(ctx_ce, ctx_gloss, dataset, shots, args.out)
+        plot_norm_comparison(ctx_ce, ctx_gloss, dataset, shots, args.out)
 
-            if 'matrix' in res and isinstance(res['matrix'], (list, tuple, np.ndarray)):
-                try:
-                    seed_matrices.append(np.array(res['matrix']))
-                except Exception:
-                    pass
+        # Print nearest words
+        if not args.no_words:
+            print_nearest_words(ctx_ce, ctx_gloss, dataset, shots, tokenizer, token_embedding, args.topk)
 
-        valid_vals = [v for v in seed_vals if v is not None]
-        if len(valid_vals) == 3:
-            avg = float(np.mean(valid_vals))
-            summary_rows.append((group, avg))
-            # save aggregated matrix if matrices exist and align
-            if seed_matrices:
-                try:
-                    shapes = [m.shape for m in seed_matrices]
-                    if all(s == shapes[0] for s in shapes):
-                        agg = sum(seed_matrices) / len(seed_matrices)
-                        if plt is not None:
-                            plt.figure(figsize=(6,5))
-                            plt.imshow(agg, aspect='auto', cmap='viridis')
-                            plt.colorbar(label='cosine')
-                            plt.xlabel('method2 tokens')
-                            plt.ylabel('method1 tokens')
-                            plt.title(f'Avg cosine matrix ({agg.shape[0]}x{agg.shape[1]})\nAvg global cos={avg:.4f}')
-                            plt.tight_layout()
-                            agg_path = os.path.join(args.out, f"{group.replace(os.sep, '_')}_avg_sim.png")
-                            os.makedirs(os.path.dirname(agg_path), exist_ok=True) if os.path.dirname(agg_path) else None
-                            plt.savefig(agg_path)
-                            print(f"  Saved aggregated similarity matrix to {agg_path}")
-                            plt.close()
-                        else:
-                            print(f"  Warning: matplotlib not available, skipping aggregated PNG for {group}")
-                except Exception as e:
-                    print(f"  Failed to compute/save aggregated matrix for {group}: {e}")
-        else:
-            print(f"Skipping {group}: not all seeds succeeded ({len(valid_vals)}/3 valid)")
-            commented_lines.append(f"# {group},skipped: only {len(valid_vals)} valid seeds")
+        # Store summary
+        summary[dataset] = {
+            "global_cos": global_cos,
+            "per_token_mean": float(np.mean(per_token_cos)),
+            "per_token_min": float(np.min(per_token_cos)),
+            "shots": shots,
+        }
 
-    csv_path = os.path.join(args.out, 'summary.csv')
-    with open(csv_path, 'w') as fh:
-        fh.write('group,avg_global_cos\n')
-        for g, a in summary_rows:
-            fh.write(f"{g},{a:.6f}\n")
-        for c in commented_lines:
-            fh.write(c + '\n')
+        print(f"  Global cosine similarity: {global_cos:.4f}")
+        print(f"  Per-token mean similarity: {np.mean(per_token_cos):.4f}")
+        print(f"  Most diverged token: position {np.argmin(per_token_cos)} (cos={np.min(per_token_cos):.4f})")
 
-    print(f"\nSaved visualizations and summary to {args.out}")
+    # Summary chart across all datasets
+    if summary:
+        plot_summary_global_cos(summary, args.out)
+
+    # Save CSV summary
+    csv_path = os.path.join(args.out, "summary.csv")
+    with open(csv_path, "w") as f:
+        f.write("dataset,shots,global_cos,per_token_mean,per_token_min\n")
+        for d, v in summary.items():
+            f.write(f"{d},{v['shots']},{v['global_cos']:.6f},{v['per_token_mean']:.6f},{v['per_token_min']:.6f}\n")
+    print(f"\nSaved summary CSV: {csv_path}")
+    print(f"\nDone! All outputs saved to: {args.out}/")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
