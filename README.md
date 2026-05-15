@@ -14,14 +14,14 @@ choose your dataset root
 DATA_ROOT=/full/path/to/datasets
 mkdir -p "$DATA_ROOT/oxford_pets/images" "$DATA_ROOT/oxford_pets/annotations"
 
-# if you downloaded the official archives to ~/Downloads:
+if you downloaded the official archives to ~/Downloads:
 tar -xzf ~/Downloads/images.tar.gz -C "$DATA_ROOT/oxford_pets/images"
 tar -xzf ~/Downloads/annotations.tar.gz -C "$DATA_ROOT/oxford_pets/annotations"
 
-# copy the split JSON (if you have it)
+copy the split JSON (if you have it)
 cp ~/Downloads/split_zhou_OxfordPets.json "$DATA_ROOT/oxford_pets/split_zhou_OxfordPets.json"
 
-# quick checks
+quick checks
 ls -l "$DATA_ROOT/oxford_pets"
 ls -l "$DATA_ROOT/oxford_pets/images" | head
 ls -l "$DATA_ROOT/oxford_pets/annotations" | head
