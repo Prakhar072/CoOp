@@ -110,6 +110,8 @@ class PromptLearner(nn.Module):
         self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
         self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS
 
+        self.register_buffer("vocab_embeddings", clip_model.token_embedding.weight.detach().type(dtype))
+
         self.n_cls = n_cls
         self.n_ctx = n_ctx
         self.tokenized_prompts = tokenized_prompts  # torch.Tensor
@@ -193,6 +195,15 @@ class CustomCLIP(nn.Module):
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
 
+    def encode_image(self, image):
+        return self.image_encoder(image.type(self.dtype))
+
+    def encode_text_features(self):
+        prompts = self.prompt_learner()
+        tokenized_prompts = self.tokenized_prompts
+        text_features = self.text_encoder(prompts, tokenized_prompts)
+        return text_features
+
     def forward(self, image):
         image_features = self.image_encoder(image.type(self.dtype))
 
@@ -207,6 +218,46 @@ class CustomCLIP(nn.Module):
         logits = logit_scale * image_features @ text_features.t()
 
         return logits
+    
+    def forward_with_label_graph(self, image, labels):
+        image_features = self.encode_image(image)
+        
+        # Get the learned context vectors directly from PromptLearner
+        # These are the actual learnable parameters (shape: n_ctx, dim) or (n_cls, n_ctx, dim)
+        ctx = self.prompt_learner.ctx
+        
+        # If ctx is shared across classes (2D), expand to match labels
+        if ctx.dim() == 2:
+            # ctx shape: (n_ctx, dim)
+            # Average across context dimension to get a single feature vector
+            prompt_features = ctx.mean(dim=0, keepdim=True).expand(labels.shape[0], -1)
+        else:
+            # ctx shape: (n_cls, n_ctx, dim) - class-specific contexts
+            # Select contexts based on labels and average across context dimension
+            batch_ctx = ctx[labels]  # (batch_size, n_ctx, dim)
+            prompt_features = batch_ctx.mean(dim=1)  # (batch_size, dim)
+        
+        # Normalize
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        prompt_features = prompt_features / prompt_features.norm(dim=-1, keepdim=True)
+        
+        # Concatenate image embeddings with learned context embeddings
+        alpha = 1.0  # tunable — amplifies prompt's influence on graph
+        concat_features = torch.cat([image_features, alpha * prompt_features], dim=-1)
+        concat_features = concat_features / concat_features.norm(dim=-1, keepdim=True)
+        
+        return concat_features
+
+
+# Dataset-specific hyperparameters for GLoss
+DATASET_HYPERPARAMS = {
+    "caltech101": {"sigma": 2.0, "gamma": 0.9},
+    "dtd": {"sigma": 1.5, "gamma": 0.85},
+    "fgvc_aircraft": {"sigma": 2.5, "gamma": 0.9},
+    "oxford_flowers": {"sigma": 2.0, "gamma": 0.9},
+    "oxford_pets": {"sigma": 1.5, "gamma": 0.85},
+    "ucf101": {"sigma": 3.0, "gamma": 0.9},
+}
 
 
 @TRAINER_REGISTRY.register()
@@ -243,7 +294,7 @@ class CoOp(TrainerX):
             load_pretrained_weights(self.model.prompt_learner, cfg.MODEL.INIT_WEIGHTS)
 
         self.model.to(self.device)
-        # NOTE: only give prompt_learner to the optimizer
+        # NOTE: only give prompt_learner to the op timizer
         self.optim = build_optimizer(self.model.prompt_learner, cfg.OPTIM)
         self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
         self.register_model("prompt_learner", self.model.prompt_learner, self.optim, self.sched)
@@ -259,6 +310,12 @@ class CoOp(TrainerX):
 
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
+
+        #store state
+        if self.batch_idx == 0 and self.epoch == 0:
+            with torch.no_grad():
+                self._initial_ctx = self.model.prompt_learner.ctx.data.clone()
+            print(f"\n[Epoch 0, Batch 0] Stored initial prompt state")
         
         # Get the loss function based on configuration
         loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION, self.cfg)
@@ -272,9 +329,30 @@ class CoOp(TrainerX):
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optim)
             self.scaler.update()
+        
         else:
-            output = self.model(image)
-            loss = loss_fn(output, label)
+            loss_fn_name = self.cfg.TRAINER.LOSS_FUNCTION
+            
+            if loss_fn_name == "cross_entropy":
+                # Pure CE baseline
+                output = self.model(image)
+                loss = F.cross_entropy(output, label)
+            else:  # Assume it's "custom" or "ce_gloss"
+                # CE+GLoss hybrid
+                output = self.model(image)
+                ce_loss = F.cross_entropy(output, label)
+                concat_emb = self.model.forward_with_label_graph(image, label)
+                n_cls = self.model.prompt_learner.n_cls
+                
+                # Get dataset-specific hyperparameters
+                dataset_name = self.cfg.DATASET.NAME.lower()
+                hyperparams = DATASET_HYPERPARAMS.get(dataset_name, {"sigma": 2.0, "gamma": 0.9})
+                sigma = hyperparams["sigma"]
+                gamma = hyperparams["gamma"]
+                
+                g_loss = loss_fn(concat_emb, label, n_cls, sigma=sigma, gamma=gamma)
+                loss = 0.2 * ce_loss + 0.8 * g_loss
+            
             self.model_backward_and_update(loss)
 
         loss_summary = {
@@ -282,7 +360,55 @@ class CoOp(TrainerX):
             "acc": compute_accuracy(output, label)[0].item(),
         }
 
+        #if (self.batch_idx + 1) == self.num_batches:
+        #    self.update_lr()
+        
+        #report
+        if self.batch_idx % 5 == 0:  # Check every 5 batches
+            print(f"\n[Epoch {self.epoch}, Batch {self.batch_idx}] Diagnostics:")
+            
+            # 1. Check gradients
+            has_grads = False
+            total_grad_norm = 0.0
+            for name, param in self.model.prompt_learner.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    total_grad_norm += grad_norm
+                    has_grads = True
+                    print(f"  ✓ {name}: grad_norm={grad_norm:.8f}")
+                else:
+                    print(f"  ✗ {name}: NO GRADIENT")
+            
+            if not has_grads:
+                print(f"  ❌ CRITICAL: NO GRADIENTS REACHING PROMPTS")
+            else:
+                print(f"  ✓ Total grad norm: {total_grad_norm:.8f}")
+            
+            # 2. Check prompt change
+            with torch.no_grad():
+                current_ctx = self.model.prompt_learner.ctx.data.clone()
+            
+            if hasattr(self, '_initial_ctx'):
+                ctx_change = (current_ctx - self._initial_ctx).abs().max().item()
+                print(f"  Prompt change since epoch start: {ctx_change:.8f}")
+                if ctx_change < 1e-8:
+                    print(f"  ⚠️  Prompts NOT changing!")
+                else:
+                    print(f"  ✓ Prompts ARE changing")
+    
+    # ============ END OF EPOCH REPORT ============
         if (self.batch_idx + 1) == self.num_batches:
+            with torch.no_grad():
+                final_ctx = self.model.prompt_learner.ctx.data.clone()
+            
+            if hasattr(self, '_initial_ctx'):
+                epoch_ctx_change = (final_ctx - self._initial_ctx).abs().max().item()
+                print(f"\n[Epoch {self.epoch} END] Prompt change over entire epoch: {epoch_ctx_change:.8f}")
+                if epoch_ctx_change < 1e-8:
+                    print(f"  ❌ Prompts NOT changing at all")
+                else:
+                    print(f"  ✓ Prompts changed: {epoch_ctx_change:.8f}")
+            
             self.update_lr()
 
         return loss_summary
