@@ -105,6 +105,11 @@ def extend_cfg(cfg):
 
     cfg.TRAINER.LOSS_FUNCTION = "cross_entropy"  # loss function to use
 
+    cfg.TRAINER.GLOSS = CN()
+    cfg.TRAINER.GLOSS.SIGMA = 0.1  # Gaussian kernel bandwidth
+    cfg.TRAINER.GLOSS.GAMMA = 0.5  # Fraction of samples to use as labeled set
+    cfg.TRAINER.GLOSS.CLASS_WEIGHTS = None  # None for uniform weights, or list of weights
+
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
 

@@ -318,7 +318,7 @@ class CoOp(TrainerX):
             print(f"\n[Epoch 0, Batch 0] Stored initial prompt state")
         
         # Get the loss function based on configuration
-        loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION)
+        loss_fn = get_loss_function(self.cfg.TRAINER.LOSS_FUNCTION, self.cfg)
         
         prec = self.cfg.TRAINER.COOP.PREC
         if prec == "amp":

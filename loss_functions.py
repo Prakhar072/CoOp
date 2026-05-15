@@ -14,12 +14,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 
-def get_loss_function(loss_fn_name):
+def get_loss_function(loss_fn_name, cfg=None):
     """
     Get the loss function by name.
     
     Args:
-        loss_fn_name (str): Name of the loss function ('cross_entropy', 'custom', etc.)
+        loss_fn_name (str): Name of the loss function ('cross_entropy', 'gloss', etc.)
+        cfg (Config, optional): Configuration object. Required for 'gloss' loss function.
     
     Returns:
         callable: Loss function that takes (output, label) and returns loss
