@@ -17,6 +17,19 @@ tokens.csv
 prompt_analysis_out/
 output_8th/
 
+# Paths inside gloss_prakhar after reorganization
+gloss_prakhar/datasets_root/
+gloss_prakhar/output_0.2hybrid/
+gloss_prakhar/output_01.hybrid/
+gloss_prakhar/output_0.3hybrid/
+gloss_prakhar/output_ce/
+gloss_prakhar/models.txt
+gloss_prakhar/tokens.csv
+gloss_prakhar/prompt_analysis_out/
+gloss_prakhar/output_8th/
+gloss_prakhar/output/
+gloss_prakhar/debug.sh
+
 # Distribution / packaging
 .Python
 build/
